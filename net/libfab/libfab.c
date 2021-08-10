@@ -3050,7 +3050,7 @@ static int libfab_buf_add(struct m0_net_buffer *nb)
 			// op_msg.addr = 0;
 			// op_msg.context = &fbp->fb_token;
 			// op_msg.data = 0;
-			// fbp->fb_wr_cnt = 1;
+			fbp->fb_wr_cnt = 1;
 			ret = libfab_bulklist_add(ma, fbp, aep);
 			libfab_bulk_buf_process(ma);
 			// ret = fi_sendmsg(aep->aep_txep, &op_msg, FI_COMPLETION);
