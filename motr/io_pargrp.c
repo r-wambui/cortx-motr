@@ -2460,7 +2460,7 @@ fail:
 	return M0_ERR(-ENOMEM);
 }
 
-M0_UNUSED static bool are_pbufs_allocated(struct m0_op_io *ioo)
+static bool are_pbufs_allocated(struct m0_op_io *ioo)
 {
 	return ioo->ioo_pbuf_type == M0_PBUF_DIR;
 }
