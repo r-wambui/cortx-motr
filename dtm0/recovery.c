@@ -41,6 +41,13 @@
    - @ref DTM0BR-usecases
    - @ref DTM0BR-ref
    - @ref DTM0BR-impl-plan
+--->>>
+Max: [* defect *] ut and st sections are missing.
+<<<---
+--->>>
+Max: [* style *] usecases section should go to .h file, along with the rest of
+     the sections in .h in DLD template.
+<<<---
 
 
    <hr>
@@ -52,6 +59,11 @@
    This document is intended to be a description of the basic recovery
    machine used by DTM0 services to restore consistency of the underlying
    storage as per the requirements specified in the DTM0 HLD[1].
+--->>>
+Max: [* defect *] This is an obvious definition, which has very small value.
+     Please make an overview which would bring as much useful information to the
+     reader as it can in just a few lines.
+<<<---
 
 
    <hr>
@@ -66,6 +78,11 @@
    Previously defined terms used here (defined in the DTM0 HLD[1]):
    - <b>Process states</b>
    - <b>HA EOS</b>
+--->>>
+Max: [* question *] Are those all the terms that are used here? If no, please
+     add the rest of the terms. Please also consider adding terms that are being
+     used, but which are not in DTM0 HLD.
+<<<---
 
    New terms:
    - <b>Recovery machine</b>
@@ -76,6 +93,9 @@
    - <b>User service</b>
    - <b>W-request</b>
    - <b>R-request</b>
+--->>>
+Max: [* defect *] The terms are not defined. Please define them.
+<<<---
 
    <hr>
    @section DTM0BR-req Requirements
@@ -83,15 +103,40 @@
    The DLD shall state the requirements that it attempts to meet.</i>
 
    Recovery machine shall meet the requirements defined in the DTM0 HLD[1].
+--->>>
+Max: [* question *] All of them? If no, please put a list here. If so, please
+     put the list anyway.
+<<<---
    Additionally, it has the following list of low-level requirements:
+--->>>
+Max: [* question *] Why do we have those requirements? Please provide a way to
+     track them to the top-level requirements or requriements for other DTM0
+     subcomponents.
+<<<---
 
    - @b R.DTM0BR.HA-Aligned State transitions of the recovery SM shall be
    aligned with the state transitions of Motr processes delivered by
    the HA subsystem to the recovery machine.
    - @b R.DTM0BR.Basic Recovery machine shall support only a subset of
    possible use-cases. The subset is defined in @ref DTM0BR-usecases.
+--->>>
+Max: [* defect *] Usecases are not defined.
+<<<---
    - @b R.DTM0BR.No-Batching Recovery machine shall replay logs in
    a synchronous manner one-by-one.
+--->>>
+Max: [* question *] One-by-one log or one-by-one log record? In the latter case:
+     what about records from logs on different nodes?
+<<<---
+--->>>
+Max: [* question *] How those logs or records are ordered (to be able to process
+     them one-by-one)?
+<<<---
+--->>>
+Max: [* question *] What about performance: is it possible for this design to
+     meet performance requirements? In any case please clearly state if it is
+     and why.
+<<<---
 
    <hr>
    @section DTM0BR-depends Dependencies
@@ -100,9 +145,17 @@
 
    The basic recovery machine depends on the following components:
    - Hare. This component holds the ordered log of all HA events in the system.
+--->>>
+Max: [* defect *] This is not true at the moment. Please specify if it's
+     possible to implement this design without this being true or what is the
+     plan to deal with this.
+<<<---
    - DTM0 service. The service provides access to DTM0 log and DTM0 RPC link.
    - DTM0 log. The log is used to fill in REDO messages.
    - DTM0 RPC link. The lik is used as transport for REDO messages.
+--->>>
+Max: [* typo *] s/lik/link/
+<<<---
    - Motr HA/conf. HA states of Motr conf objects provide the information
    about state transitions of local and remote Motr processes.
    - Motr conf. The conf module provides the list of remote DTM0 services.
@@ -116,9 +169,24 @@
 
    The recovery machine is a set of independent FOMs (one FOM per
    potential DTM0 participant). Such a FOM is called a recovery FOM.
+--->>>
+Max: [* defect *] It's not clear if it's an in-process set or a set of foms in
+     different processes. Please clarify.
+<<<---
    A recovery FOM has sub-machines dedicated to a "role" in the recovery
+--->>>
+Max: [* defect *] It's not clear what a "sub-machine" is. Please provide a
+     reference.
+<<<---
    procedures: remote recovery, local recovery, and eviction.
+--->>>
+Max: [* doc *] Please clarify if the fom could have several "roles" at the same
+     time and how the state transition between roles happen.
+<<<---
    The role is changed linearly based on the incoming HA events for the
+--->>>
+Max: [* defect *] Definition of "linearly" in this context is missing.
+<<<---
    corresponding participant.
 
    <hr>
@@ -179,6 +247,10 @@
 		dlog -> rfom[label="records"];
 	}
    @enddot
+--->>>
+Max: [* defect *] Communication with other recovery foms in the same process and
+     in different processes are missing. Please add.
+<<<---
 
    The following sequence diagram represents an example of linerisation of
    HA decisions processing:
@@ -201,10 +273,18 @@
    - Cancels recovery.
    - Re-starts replay by sending REDO(1) again.
    - Get the reply.
+--->>>
+Max: [* defect *] One example is not enough to describe the algorithm. Please
+     explain how it's done exactly. Maybe not in this section, but somewhere in DLD.
+<<<---
 
    @subsection DTM0BR-lspec-rem-fom Remote recovery FOM
    <i>Such sections briefly describes the purpose and design of each
    sub-component.</i>
+--->>>
+Max: [* defect *] State machine is there, but what the fom actually does is
+     missing. Please add.
+<<<---
 
    When a recovery FOM detects a state transition to RECOVERING of a remote
    participant, it transits to the sub-SM called "Remote recovery FOM".
@@ -239,32 +319,76 @@
    sub-component.</i>
 
    Local recovery is used to ensure fairness of overall recovery procedure.
+--->>>
+Max: [* defect *] Definition of "fairness" in this context is missing. Please
+     add.
+<<<---
+--->>>
+Max: [* defect *] Definition of the "fairness" is "ensured" is missing. Please
+     add.
+<<<---
    Whenever a participant learns that it got all missed log records, it sends
    M0_CONF_HA_PROCESS_RECOVERED process event to the HA subsystem.
 
    The point where this event has to be sent is called "recovery stop
    condition". The local participant (i.e., the one that is beign in
+--->>>
+Max: [* typo *] being
+<<<---
    the RECOVERING state) uses the information about new incoming W-requests,
    the information about the most recent (txid-wise) log entries on the other
    participants to make a decision whether recovery shall be stopped or not.
 
    TODO: describe the details on when and how it should stop.
+--->>>
+Max: [* defect *] You're right, the details are missing.
+<<<---
 
 
    @subsection DTM0BR-lspec-loc-fom Eviction FOM
    <i>Such sections briefly describes the purpose and design of each
    sub-component.</i>
+--->>>
+Max: [* defect *] The purpose of the eviction fom is not described.
+<<<---
 
    A recovery FOM re-incarnates as eviction FOM (i.e., enters the initial
+--->>>
+Max: [* defect *] A definition of "re-incarnation" is missing.
+<<<---
    of the corresponding sub-SM) when the HA subsystem notifies about
+--->>>
+Max: [* defect *] A definition of sub-SM is missing.
+<<<---
    permanent failure (FAILED) on the corresponding participant.
 
    The local DTM0 log shall be scanned for any record where the FAILED
+--->>>
+Max: [* doc *] Please add a reference to the component which does the scanning.
+<<<---
+--->>>
+Max: [* doc *] Please explain how to scanning is done:
+     - sequentially?
+     - from least recent to most recent?
+     - one fom/thread/whatever or multiple? How the work is distributed?
+     - locks also have to be described somewhere in DLD.
+<<<---
    participant participated. Such a record shall be replayed to the
    other participants that are capable of receiving REDO messages.
+--->>>
+Max: [* defect *] What to do with the message if a participant is in TRANSIENT
+     state is not described.
+<<<---
 
    When the log has been replayed completely, the eviction FOM notifies
+--->>>
+Max: [* defect *] Criteria of "log has been replayed completely" is missing.
+     Please add.
+<<<---
    the HA subsystem about completion and leaves the sub-SM.
+--->>>
+Max: [* question *] How? Please also describe what is expected from HA.
+<<<---
 
    TODO: GC of FAILED processes and handling of clients restart.
 
@@ -277,6 +401,9 @@
    states, and a few global states.
 
    TODO: state diagram for overall recovery FOM.
+--->>>
+Max: [* doc *] Also distributed state diagram.
+<<<---
 
    @subsection DTM0BR-lspec-thread Threading and Concurrency Model
    <i>Mandatory.
@@ -286,17 +413,46 @@
    (such as semaphores, locks, mutexes and condition variables).</i>
 
    Recovery machine revolves around the following kins of threads:
+--->>>
+Max: [* typo *] s/kins/kinds/
+<<<---
+--->>>
+Max: [* defect *] Definition of "revolves" is missing.
+<<<---
    - Locality threads (Recovery FOMs, DTM0 log updates).
    - RPC machine thread (RPC replies).
 
    Each recovery FOM is beign executed using Motr coroutines library.
+--->>>
+Max: [* defect *] s/executed/implemented/. Motr foms are being executed by
+     locality threads.
+<<<---
    Within the coroutine ::m0_be_op and/or ::m0_co_op is used to await
+--->>>
+Max: [* question *] RE: "the coroutine": which one?
+<<<---
    on external events.
+--->>>
+Max: [* suggestion *] A list of such events would help to understand why be/co
+     ops are needed.
+<<<---
 
    DTM0 log is locked using a mutex (TBD: the log mutex or a separate mutex?)
+--->>>
+Max: [* question *] Entire DTM0 log is locked using a mutex? If no, please add
+     unambiguous sentence. Example: "<pointer to a watcher ot whatever> is
+     protected with a mutex" or "a separate mutex protects concurrent access to
+     <a field>".
+<<<---
    whenever recovery machine sets up or cleans up its watcher.
+--->>>
+Max: [* defect *] The watcher description/workflow/etc. is missing. Please add.
+<<<---
 
    Interraction with RPC machine is wrapped by Motr RPC library and DTM0
+--->>>
+Max: [* typo *] s/Interraction/Interaction/
+<<<---
    RPC link component. It helps to unify the type of completion objects
    across the FOM code.
 
@@ -309,20 +465,52 @@
 
    There is no so much shared resources outside of DTM0 log and
    the localities. Scaling and batching is outside of the scope
+--->>>
+Max: [* defect *] The number of localities is equal to the number of CPU cores
+in our default configuration, so whatever uses more than one locality has to
+have some kind of synchronisation.
+<<<---
+--->>>
+Max: [* defect *] It's not clear what "scaling" and "batching" mean in this
+     context. Please explain and/or add a reference where they are explained.
+<<<---
    of this document.
+--->>>
+Max: [* defect *] FOM locality assignment is missing.
+<<<---
 
    <hr>
    @section DTM0BR-conformance Conformance
    <i>Mandatory.
    This section cites each requirement in the @ref DTM0BR-req section,
    and explains briefly how the DLD meets the requirement.</i>
+--->>>
+Max: [* defect *] Top-level requirements from HLD are missing.
+<<<---
 
    - @b I.DTM0BR.HA-Aligned Recovery machine provides an event queue that
    is beign consumed orderly by the corresponding FOM.
+--->>>
+Max: [* defect *] The word "queue" is present in this document only here. Please
+     describe the event queue and events somewhere in this DLD.
+<<<---
+--->>>
+Max: [* defect *] It's not clear how "HA subsystem" from the requirement is met
+     by the implementation.
+<<<---
    - @b I.DTM0BR.Basic Recovery machine supports only basic log replay defined
    by the remote recovery FOM and its counterpart.
+--->>>
+Max: [* defect *] "basic" term is not defined. Please define.
+<<<---
    - @b I.DTM0BR.No-Batching Recovery machine achieves it by awaiting on
    RPC replies for every REDO message sent.
+--->>>
+Max: [* defect *] Maybe I should wait for I.* for performance and availability
+     requirements, but as of now it's not clear how DTM recovery would catch up
+     with the rest of the nodes creating new DTM0 transactions in parallel with
+     DTM recovery.
+<<<---
 
    <hr>
    @section DTM0BR-usecases
@@ -330,6 +518,9 @@
    </i>
 
    TODO: Add use-cases.
+--->>>
+Max: [* defect *] Right, they are missing.
+<<<---
 
 
    <hr>
@@ -337,6 +528,9 @@
    <i>This section estimates the performance of the component, in terms of
    resource (memory, processor, locks, messages, etc.) consumption,
    ideally described in big-O notation.</i>
+--->>>
+Max: [* doc *] Please fill this section with references to the requirements.
+<<<---
 
    <hr>
    @section DLD-ref References
@@ -361,6 +555,11 @@
    - Populate the list of system tests.
    - Improve the stop condition based on the use-cases and tests.
    - Add implementation of eviction FOM.
+--->>>
+Max: [* defect *] No mention of tests being done. Please clearly state when and
+     how the tests are going to be done or where and when it would be possible
+     to find this information.
+<<<---
  */
 
 
