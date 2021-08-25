@@ -865,6 +865,624 @@ Max: [* defect *] No mention of tests being done. Please clearly state when and
  *  5. Eviction is not fully covered by this document.
  */
 
+/* start of recovery machine pseudo-code */
+#if 1
+/* ------------------------8< recovery.h ------------------------------------ */
+/* imports */
+struct m0_dtm0_service;
+struct m0_fid;
+enum m0_ha_obj_state;
+
+/* exports */
+struct m0_dtm0_recovery {
+	struct m0_dtm0_service *re_svc;
+	struct m0_tl            re_foms;
+};
+
+M0_INTERNAL void m0_dtm0_recovery_domain_init(void);
+M0_INTERNAL void m0_dtm0_recovery_domain_fini(void);
+
+M0_INTERNAL void m0_dtm0_recovery_init(struct m0_dtm0_recovery *recovery,
+				       struct m0_dtm0_service  *dtms);
+M0_INTERNAL void m0_dtm0_recovery_fini(struct m0_dtm0_recovery *recovery);
+
+/* ------------------------8< recovery.c ------------------------------------ */
+
+#define M0_DTM0_RMACH_MAGIC 0x3AB0DBED
+#define M0_DTM0_PMACH_HEAD_MAGIC 0xB0EB0D11
+
+struct m0_co_fom {
+	struct m0_fom        cf_base;
+	struct m0_co_context cf_coctx;
+	struct m0_co_op      cf_await;
+};
+
+struct m0_dtm0_log_cursor {
+	struct m0_dtm0_log     *c_log;
+	struct m0_dtm0_tx_desc  c_txd;
+	struct m0_buf           c_payload;
+};
+
+static void m0_dtm0_log_cursor_init(void);
+static bool m0_dtm0_log_cursor_has_next(void);
+static void m0_dtm0_log_cursor_next(void);
+static void m0_dtm0_log_cursor_get(void);
+
+enum {
+	/*
+	 * Number of HA event that could be submitted by the HA subsystem
+	 * at once; where:
+	 *   "HA event" means state tranistion of a single DTM0 process;
+	 *   "at once" means the maximal duration of a tick of any FOM
+	 *     running on the same locality as the recovery FOM that
+	 *     handles HA events.
+	 * XXX: The number was chosen randomly. Update the previous sentence
+	 *      if you want to change the number.
+	 */
+	HA_EVENT_MAX_NR = 32,
+};
+
+struct recovery_task {
+	struct m0_sm              rt_sm;
+	struct m0_sm_group        rt_sm_group;
+
+	struct m0_tlink           rt_linkage;
+	struct m0_fid             rt_target;
+
+	struct m0_fom             rt_fom;
+
+	struct m0_dtm0_log_cursor rt_log_cursor;
+#if 0
+	struct m0_co_fom          rt_cf;
+	struct m0_dtm0_tid        rt_first_seen;
+	struct m0_dtm0_tid        rt_last_seen;
+	struct m0_dtm0_log_cursor rt_cursor;
+#endif
+	struct m0_clink            rt_ha_clink;
+
+	/* HA event queue populated by the clink and consumed by the FOM. */
+	struct m0_be_queue         rt_heq;
+};
+
+struct ha_event {
+	enum m0_ha_obj_state state he_state;
+	struct m0_sm_ast           he_ast;
+};
+
+M0_TL_DESCR_DEFINE(rtask, "recovery_task",
+		   static, struct recovery_task, rt_linkage,
+		   rt_magic, M0_DTM0_RMACH_MAGIC, M0_DTM0_RMACH_HEAD_MAGIC);
+M0_TL_DEFINE(rtask, static, struct recovery_task);
+
+
+static const m0_fid *fom_target(struct m0_fom *);
+
+M0_INTERNAL void m0_dtm0_recovery_init(struct m0_dtm0_recovery *r,
+				       struct m0_dtm0_service  *svc);
+M0_INTERNAL void m0_dtm0_recovery_fini(struct m0_dtm0_recovery *r);
+
+struct m0_reqh *m0_dtm0_recovery_reqh(struct m0_dtm0_recovery *r);
+
+static const struct m0_fid *local_fid(const struct m0_dtm0_recovery *r);
+static struct m0_fom *local_fom_alloc(struct m0_dtm0_recovery *r);
+static struct m0_fom *remote_fom_alloc(struct m0_dtm0_recovery *r,
+				       const struct m0_fid     *target);
+
+#define F M0_CO_FRAME_DATA
+
+static struct recovery_task *fom2rt(struct m0_fom *fom)
+{
+	struct recovery_task *rt = M0_AMB(rt, fom, rt_fom);
+	return rt;
+}
+
+static struct m0_co_context *CO(struct m0_fom *fom)
+{
+	return &fom2rt(fom)->rt_context;
+}
+
+M0_INTERNAL void m0_be_dtm0_log_on_new_record(struct m0_be_dtm0_log *log,
+					      struct m0_clink       *clink);
+
+static void log_add_clink_cb(struct m0_clink *clink);
+
+struct m0_be_op_poll {
+	struct m0_be_op  bop_super;
+	struct m0_be_op *bop_set;
+	uint64_t         bop_set_nr;
+	uint64_t         bop_done_mask;
+};
+
+M0_INTERNAL int m0_be_op_await(struct m0_be_op *op,
+			       struct m0_fom   *fom,
+			       int              next_state)
+{
+	enum m0_fom_phase_outcome ret = M0_FSO_AGAIN;
+
+	m0_be_op_lock(op);
+	M0_PRE(M0_IN(op->bo_sm.sm_state, (M0_BOS_ACTIVE, M0_BOS_DONE)));
+
+	if (op->bo_sm.sm_state == M0_BOS_ACTIVE) {
+		ret = M0_FSO_WAIT;
+		m0_fom_wait_on(fom, &op->bo_sm.sm_chan, &fom->fo_cb);
+	}
+	m0_be_op_unlock(op);
+	return ret;
+}
+
+static void m0_be_op_poll_cb(struct m0_be_op *op, void *param)
+{
+	int                i;
+	struct m0_be_poll *poll = param;
+
+	for (i = 0; i < poll->bop_set_nr; ++i)
+		if (op == poll->bop_set + i)
+			break;
+
+	M0_ASSERT(i < poll->bop_set_nr);
+
+	m0_be_op_lock(&poll->super);
+	poll->bop_done_mask |= M0_BITS(i);
+	if (!m0_be_op_is_done(&poll->super))
+		m0_sm_state_set(&poll->super.bo_sm);
+	m0_be_op_unlock(&poll->super);
+}
+
+static void m0_be_op_poll_init(struct m0_be_op_poll *poll,
+			       struct m0_be_op      *opset,
+			       uint64_t              opset_nr,
+			       uint64_t              mask)
+{
+	int              i;
+	struct m0_be_op *super = &poll->bop_super;
+
+	poll->bop_set_nr = opset_nr;
+	poll->bop_set = opset;
+	poll->bop_done_mask = 0;
+
+	m0_be_op_init(super);
+
+	m0_be_op_lock(super);
+
+#define forall_forward \
+	for (i = 0; i < opset_nr; ++i) \
+		if (M0_BITS(i) & mask)
+
+#define forall_backward \
+	for (i = opset_nr; i > 0; --i) \
+			if (M0_BITS(i) & mask)
+
+	forall_forward {
+		m0_be_op_lock(opset + i);
+	}
+
+	forall_forward {
+		if (m0_be_op_is_done(opset + i)) {
+			poll->bop_done_mask |= M0_BITS(i);
+			m0_sm_state_set(&super->bo_sm);
+			break;
+		}
+		else
+			m0_be_op_callback_set(opset + i, m0_be_op_poll_cb, poll,
+					      M0_BOS_DONE);
+	}
+
+	if (m0_be_op_is_done(super))
+		forall_forward {
+			m0_be_op_callback_clear(opset + i, M0_BOS_DONE);
+		}
+
+	forall_backward {
+		m0_be_op_unlock(opset + i - 1);
+	}
+
+	m0_be_op_unlock(super);
+#undef forall_forward
+#undef forall_backward
+}
+
+static void m0_be_op_poll_fini(struct m0_be_op_poll *poll)
+{
+	struct m0_be_op *super = &poll->super;
+	m0_be_op_fini(super);
+	M0_SET0(poll);
+}
+
+
+static void m0_be_op_poll_co(struct m0_fom   *fom,
+			     struct m0_be_op *opset,
+			     uint64_t         opset_nr,
+			     uint64_t         opin_mask,
+			     uint64_t        *opout_mask)
+{
+	M0_CO_REENTER(CO(fom),
+		      struct m0_be_op_poll bop;
+		      );
+
+	m0_be_op_poll_init(&F(bop), opset, opset_nr, opin_mask);
+
+	M0_CO_YIELD_RC(m0_be_op_await(&F(bop).super));
+
+	*opout_mask = F(bop).bop_done_mask;
+
+	m0_be_op_poll_fini(&F(bop));
+}
+
+
+
+static void remote_recovery(struct m0_fom *fom, enum m0_ha_obj_state *next)
+{
+	struct recovery_task *rt = fom2rt(fom);
+	int                   i;
+
+	enum { OP_LOG, OP_HEQ, OP_RPC, OP_NR };
+	static const int OP_ALL = M0_BITS(OP_LOG, OP_HEQ, OP_RPC);
+
+	M0_CO_REENTER(CO(fom),
+		      struct m0_buf   record;
+		      struct m0_be_op ops[OP_NR];
+		      uint64_t        next;
+		      uint64_t        who;
+		      int             rc;
+		      );
+	F(rc) = 0;
+	F(next) = 0;
+
+	for (i = 0; i < OP_NR; ++i)
+		m0_be_op_init(&F(ops[i]));
+
+	log_iter_init(rt);
+
+	M0_BE_QUEUE_GET(&F(ops[OP_HEQ]), &rt->rt_heq, &F(next), &got);
+
+	while (1) {
+		while (log_iter_next(rt, &F(record))) {
+			rc = redo_post(fom, &F(record), &F(ops[OP_RPC]),
+				       &F(rc));
+			/*
+			 * We should not continue operation if we are not
+			 * even able to send out a DTM0 REDO FOP.
+			 */
+			/*
+			 * XXX: We may use be_queue_peek() instead.
+			 */
+			M0_ASSERT(rc == 0);
+			M0_CO_FUN(CO(fom),
+				  m0_be_op_poll_co(F(ops), ARRAY_SIZE(F(ops)),
+						   M0_BITS(OP_RPC, OP_HEQ),
+						   &F(who)));
+			if ((M0_BITS(OP_HEQ) & F(who)) != 0) {
+				M0_CO_YIELD_RC(m0_be_op_await(fom,
+						    &F(ops[OP_RPC])));
+				/* TODO: finalise ops */
+				goto out;
+			}
+			M0_ASSERT((M0_BITS(OP_RPC) & who) != 0);
+			if (F(rc) != 0) {
+				/* TODO: finalise rpc op */
+				break;
+			}
+			/* TODO: reinit rpc op */
+		}
+
+		log_watcher_set(rt, &F(ops[OP_LOG]));
+
+		M0_CO_FUN(CO(fom),
+			  m0_be_op_poll_co(F(ops), ARRAY_SIZE(F(ops)),
+					   M0_BITS(OP_LOG, OP_HEQ), &F(who)));
+		if ((M0_BITS(OP_HEQ) & F(who)) != 0) {
+			log_watcher_set(rt, NULL);
+			/* TODO: finalise ops */
+			break;
+		}
+		M0_ASSERT((M0_BITS(OP_LOG) & who) != 0);
+		/* TODO: reinit log op */
+	}
+
+out:
+	if (F(got)) {
+		M0_ASSERT(F(next) < M0_NC_NR);
+		*next = F(next);
+	} else
+		*next = M0_NC_UNKNOWN;
+}
+
+static void local_recovery(struct m0_fom *fom, enum m0_ha_obj_state *next)
+{
+	struct recovery_task *rt = fom2rt(fom);
+	int                   i;
+
+	M0_CO_REENTER(CO(fom),
+		      struct m0_dtm0_tid latest[SRV][CLNT];
+		      struct m0_dtm0_tid earliest_local[CLNT];
+		     );
+
+	earliest_local = m0_dtm0_log_latest_tids(log, online_clients);
+
+	process_event_post(PROCESS_STARTED);
+
+	while (1) {
+		for (i = 0; i < CLNT; ++i) {
+			if (is_none(latest[SELF][i]))
+				cas_watcher_arm(new_io_watcher);
+		}
+		dtms_redo_watcher_arm(redo_watcher);
+		recovery_timer_arm(no_io_timer, NO_IO_TIMEOUT_SEC);
+		M0_BE_QUEUE_GET(heq, heq_op, next);
+		M0_CO_YIELD(m0_be_op_poll(redo_watcher,
+					  new_io_watcher,
+					  no_io_timer,
+					  heq_op));
+		if (triggered(heq_op)) {
+			/*
+			 * Stop condition: HA forced the local process
+			 * to stop recovery procedures.
+			 */
+			if (*next == ONLINE)
+				goto forced_stop;
+		}
+		if (triggered(new_io_watcher)) {
+			latest[SELF] = latest(latest[SELF],
+					      new_io_watcher->tids);
+		}
+		if (triggered(redo_watcher)) {
+			latest[redo_watcher->where] = redo_watcher->tids;
+		}
+
+		/*
+		 * Stop condition when there is no visible IO:
+		 *   If the local DTM0 service detects no IO for
+		 * the given period NO_IO_TIMEOUT_SEC then it leaves
+		 * RECOVERING state.
+		 */
+		if (triggered(no_io_timeout)) {
+			if ((forall(i, CLNT, is_none(latest[LOCAL][i])) &&
+			     forall(i, CLNT,
+				    forall(j, SRV excluding LOCAL,
+					   is_none(latest[i][j]))))) {
+				goto stop;
+			} else
+				recovery_timer_reset(no_io_timer);
+		}
+
+		/*
+		 * Stop condition in presense of ongoing IO:
+		 *   If every client (originator) produced IO reqests
+		 * (DTM0 Execute message) that are:
+		 *   (1) later than the latest entry in the local log.
+		 *   (2) visible on all ONLINE/RECOVERING servers
+		 *      (participants with persistent state).
+		 * then recovery shall stop when all the previous records in
+		 * the local log become stable.
+		 */
+		if (forall(i, CLNT, earliest_local[i] < latest[LOCAL][i]) &&
+		    (forall(i, SRV excluding LOCAL,
+			    forall(j, CLNT,
+				   latest[i][j] < latest[SELF][i])))) {
+			M0_CO_FUN(log_await_until_stable(latest[LOCAL]));
+			goto stop;
+		}
+	}
+
+stop:
+	process_event_post(PROCESS_RECOVERED);
+	M0_BE_QUEUE_GET(heq, *next, got);
+	M0_CO_YIELD(m0_be_op_await(heq));
+	if (!got)
+		*next = M0_NC_UNKNOWN;
+forced_stop:
+	return;
+}
+
+static void remote_eviction(struct m0_fom *fom, enum m0_ha_obj_state *next)
+{
+	(void) fom;
+	(void) next;
+	/* Not implemented yet. */
+}
+
+static void idle(struct m0_fom *fom, enum m0_ha_obj_state *next)
+{
+	M0_CO_REENTER(CO(fom));
+	M0_BE_QUEUE_GET(heq, heq_op, next, got);
+	M0_CO_YIELD(m0_be_op_await(heq_op));
+	if (!got)
+		*next = M0_NC_UNKNOWN;
+}
+
+
+static void recovery_fom_launch(struct m0_fom *fom, enum m0_ha_obj_state state)
+{
+	struct recovery_task *rt = fom2rt(fom);
+
+	M0_CO_REENTER(CO(fom);
+		      enum m0_ha_obj_state next;
+		      );
+
+	F(next) = state;
+
+	while (F(next) != M0_NC_UNKNOWN) {
+		switch (F(next)) {
+		case M0_NC_RECOVERING:
+			if (is_local(rt))
+				M0_CO_FUN(CO(fom), local_recovery(fom,
+								  &F(next)));
+			else
+				M0_CO_FUN(CO(fom), remote_recovery(fom,
+								   &F(next)));
+			break;
+		case M0_NC_FAILED:
+			M0_ASSERT(!is_local(rt));
+			M0_CO_FUN(CO(fom), remote_eviction(fom, &F(next)));
+			break;
+		default:
+			M0_CO_FUN(CO(fom), idle(fom, &F(next)));
+		}
+	}
+}
+
+static void recovery_task_fom_coro(struct m0_fom *fom)
+{
+	struct recovery_task *rt = fom2rt(fom);
+	enum m0_ha_obj_state state;
+
+	M0_CO_REENTER(CO(fom),
+		      struct m0_be_op op;
+		      bool            got;
+		      uint64_t        state;);
+
+	F(enough) = false;
+	m0_be_op_init(&F(op));
+	M0_BE_QUEUE_GET(&F(op), &rt->rt_heq, &F(state), &got);
+	M0_CO_YIELD(m0_be_op_await(&F(op)));
+	if (!&F(got))
+		return;
+	m0_be_op_fini(&F(op));
+
+	M0_ASSERT(F(state) < M0_NC_NR);
+	state = F(state);
+
+	M0_CO_FUN(CO(fom), recovery_fom_launch(fom, state));
+}
+
+static int recovery_task_fom_tick(struct m0_fom *fom)
+{
+	int rc;
+	M0_CO_START(CO(fom));
+	recovery_task_fom_coro(CO(fom));
+	rc = M0_CO_END(CO(fom));
+	M0_POST(M0_IN(rc, (0, M0_FSO_AGAIN, M0_FSO_WAIT)));
+	return rc ?: M0_FSO_WAIT;
+}
+
+static void recovery_task_fini(struct recovery_task *fom)
+{
+	m0_clink_del_lock(&process->dop_ha_link);
+	m0_clink_fini(&process->dop_ha_link);
+	rtask_tlink_init(&rt->rt_linkage);
+	m0_sm_group_init(&rt->rt_sm_group);
+	m0_sm_init(rt->rt_sm_group, recovery_sm_conf, &rt->sm_group);
+}
+
+static bool recovery_task_clink_cb(struct m0_clink *clink)
+{
+	struct recovery_task *rt        = M0_AMB(rt, clink, rt_ha_clink);
+	struct m0_conf_obj   *proc_conf = container_of(clink->cl_chan,
+						       struct m0_conf_obj,
+						       co_ha_chan);
+	uint64_t event = proc_conf->co_ha_state;
+	/*
+	 * Assumption: the queue never gets full.
+	 * XXX: We could panic in this case. Right now, the HA FOM should get
+	 *      stuck in the tick. Prorably, panic is a better solution
+	 *      here.
+	 */
+	M0_BE_OP_SYNC(op, M0_BE_QUEUE_PUT(&rt->rt_heq, op, &event));
+	return false;
+}
+
+static void recovery_task_init(struct recovery_task    *rt,
+			       struct m0_dtm0_recovery *recovery,
+			       struct m0_conf_process  *proc_conf,
+			       const struct m0_fid     *target)
+{
+	rt->rt_target   = target;
+	rt->rt_recovery = recovery;
+
+	rtask_tlink_init(&rt->rt_linkage);
+
+	m0_sm_group_init(&rt->rt_sm_group);
+	m0_sm_init(rt->rt_sm_group, recovery_sm_conf, &rt->sm_group);
+
+	m0_clink_init(rt->rt_ha_clink, recovery_task_clink_cb);
+	m0_clink_add_lock(&proc_conf->pc_obj.co_ha_chan, &rf->rf_ha_clink);
+
+	m0_fom_init(&rt->rt_fom, &recovery_fom_type,
+		    &recovery_fom_ops, NULL, NULL,
+		    m0_dtm0_recovery_reqh(recovery));
+
+	m0_fom_queue(&rt->rt_fom);
+}
+
+static int recovery_task_add(struct m0_dtm0_recovery *recovery,
+			    struct m0_conf_process  *proc_conf,
+			    const struct m0_fid     *target)
+{
+	struct recovery_task *rt;
+
+	if (M0_ALLOC_PTR(rt) != NULL) {
+		recovery_task_init(rt);
+		rtask_tlist_add_tail(&recovery->re_tasks);
+		return 0;
+	} else
+		return M0_ERR(-ENOMEM);
+}
+
+static void unpopulate(struct m0_dtm0_recovery *recovery)
+{
+	(void) recovery;
+	M0_ASSERT_INFO(false, "TODO");
+}
+
+static int populate(struct m0_dtm0_recovery *recovery)
+{
+	struct m0_confc        *confc = m0_reqh2confc(service->rs_reqh);
+	struct m0_conf_root    *root;
+	struct m0_conf_diter    it;
+	struct m0_conf_process *proc_conf;
+	struct m0_conf_service *svc_conf;
+	struct m0_fid          *svc_fid;
+	int                     rc;
+
+	M0_ENTRY("recovery=%p", recovery);
+
+	rc = m0_confc_root_open(confc, &root) ?:
+		m0_conf_diter_init(&it, confc,
+				   &root->rt_obj,
+				   M0_CONF_ROOT_NODES_FID,
+				   M0_CONF_NODE_PROCESSES_FID);
+	if (rc != 0)
+		goto out;
+
+	while ((rc = m0_conf_diter_next_sync(&it, conf_obj_is_process)) > 0) {
+		obj = m0_conf_diter_result(&it);
+		proc_conf = M0_CONF_CAST(obj, m0_conf_process);
+		rc = m0_conf_process2service_get(confc,
+						 &proc_conf->pc_obj.co_id,
+						 M0_CST_DTM0, &svc_fid);
+		if (rc == 0) {
+			rc = recovery_task_add(recovery, proc_conf, svc_fid);
+			if (rc != 0) {
+				unpopulate(recovery);
+				break;
+			}
+		}
+	}
+
+	m0_conf_diter_fini(&it);
+
+out:
+	if (root != NULL)
+		m0_confc_close(&root->rt_obj);
+	return M0_RC(0);
+}
+
+M0_INTERNAL int m0_dtm0_recovery_init(struct m0_dtm0_recovery *recovery,
+				      struct m0_dtm0_service  *dtms)
+{
+	recovery->re_svc = dtms;
+	rmach_tlist_init(&recovery->re_foms);
+	return populate(recovery);
+}
+
+M0_INTERNAL void m0_dtm0_recovery_fini(struct m0_dtm0_recovery *recovery)
+{
+	rmach_tlist_fini(&recovery->re_foms);
+	recovery->re_svc = NULL;
+	unpopulate(recovery);
+}
+
+#endif /* end of recovery machine pseudo-code */
 /*
  *  Local variables:
  *  c-indentation-style: "K&R"
