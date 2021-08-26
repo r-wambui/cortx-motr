@@ -43,6 +43,8 @@
    - @ref DTM0BR-impl-plan
 --->>>
 Max: [* defect *] ut and st sections are missing.
+IvanA: Agree. I will add it once we are more-or-less confident in use-cases and
+       requirements.
 <<<---
 --->>>
 Max: [* style *] usecases section should go to .h file, along with the rest of
@@ -56,13 +58,19 @@ Max: [* style *] usecases section should go to .h file, along with the rest of
    briefly describes the document and provides any additional
    instructions or hints on how to best read the specification.</i>
 
-   This document is intended to be a description of the basic recovery
-   machine used by DTM0 services to restore consistency of the underlying
-   storage as per the requirements specified in the DTM0 HLD[1].
+   The document describes the way how DTM0 service is supposed to restore
+   consistency of the data replicated across a certain kind of Motr-based
+   cluster. The term "basic" implies that consistency is resored only
+   for a limited number of use-cases. In the rest of the document,
+   the term "basic" is omitted for simplicity (there are no other kinds of
+   DTM0-based recovery at the moment).
+
 --->>>
 Max: [* defect *] This is an obvious definition, which has very small value.
      Please make an overview which would bring as much useful information to the
      reader as it can in just a few lines.
+IvanA: [fixed] I tried to stick to the point, and avoid any "new" terms in
+       the paragraph.
 <<<---
 
 
@@ -75,26 +83,78 @@ Max: [* defect *] This is an obvious definition, which has very small value.
    M0 Glossary and the component's HLD are permitted and encouraged.
    Agreed upon terminology should be incorporated in the glossary.</i>
 
-   Previously defined terms used here (defined in the DTM0 HLD[1]):
-   - <b>Process states</b>
-   - <b>HA EOS</b>
 --->>>
 Max: [* question *] Are those all the terms that are used here? If no, please
      add the rest of the terms. Please also consider adding terms that are being
      used, but which are not in DTM0 HLD.
+IvanA: [fixed] No, it seems like they are not used. I removed this part.
+       I'll populate the "new terms" first, and if there are any redundant
+       information, I'll add references to the HLD.
 <<<---
 
-   New terms:
-   - <b>Recovery machine</b>
-   - <b>Recovery FOM</b>
-   - <b>Remote recovery</b>
-   - <b>Local recovery</b>
-   - <b>Eviction</b>
-   - <b>User service</b>
-   - <b>W-request</b>
-   - <b>R-request</b>
+   Terms and definitions used in the document:
+   - <b>User service</b> is a Motr service that is capable of replicating
+     of its data ("user data") across the cluster. The document is focused on
+     CAS (see @ref cas-dld) but this term could be applied to any Motr service
+     that supports CRDT[2] and has behavior similar to CAS.
+     Note, this document does not differentiate actual "clients" and "servers".
+     For example, the Motr client (including DIX) is also considered to be a
+     "User service".
+   - <b>DTM0 service</b> is a Motr-service that helps a user service restore
+     consistency of its replicated data.
+   - <b>Recoverable process</b> is Motr process that has exactly one user
+     service and exactly one DTM0 service in it. Note that in UT environment,
+     a single OS process may have several user/DTM0 services, thus it may
+     have multiple recoverable services.
+--->>>
+IvanA: [* question *] @Max, "Recoverable process" does not sound good to me.
+       What do you think about "DTM0 process"? or "DTM0-backed process"?
+       I just want to avoid confusion with confd and any other Motr process that
+       does not have a DTM0 service in it. Any ideas on that?
+<<<---
+   - <b>Recovery procedures</b> is a broad term used to point at DTM0 services'
+     reactions to HA notifications about states of DTM0 services. In other
+     words, it references to actions performed by DTM0 services that
+     help to restore consistency of replicated data.
+   - <b>Recovery machine</b> is a state machine running with a DTM0 service
+     that performs recovery procedures. Each recoverable process
+     has a single instance of recovery machine.
+   - <b>Recovery FOM</b> is a long-lived FOM responsible for reaction to
+      HA-provided state changes of a recoverable process. The FOM knows the
+      id (FID) of this process (<b>Recovery FOM id</b>). If the recovery
+      FOM id matches with the id of the process it is running on, then
+      this FOM is called "local". Otherwise, it is called "remote".
+      If a Motr cluster has N recoverable processes in the configuration then
+      each recoverable process has N recovery FOMs (one per remote counterpart
+      plus one local FOM).
+   - <b>Recovery FOM role</b> is a sub-set of states of a recovery FOM. Each
+      recovery FOM may have one of the following roles: remote recovery,
+      local recovery, eviction. The term "role" is often omitted.
+   - <b>Recovery FOM reincarnation</b> is a transition between the roles
+      of a recovery FOM. Reincarnation happens as a reaction to HA notifications
+      about state changes of the corresponding process.
+   - <b>Remote recovery role</b> defines a sub-set of states of a recovery FOM
+      that performs recovery of a remote process (by sending REDO messages).
+   - <b>Local recovery role </b> defines a sub-set of states of a recovery FOM
+      that is responsible for starting and stopping of recovery procedures on
+      the local recoverable process.
+   - <b>Eviction role</b> defines a sub-set of states of a recovery FOM that is
+      restores consistency of up to N-1 (N is number of recoverable processes
+      in the configuration) recoverable processes after one of the recoverable
+      processes of the cluster experienced a permanent failure (see HLD[1]).
+   - <b>W-request</b> is a FOP sent from one user service to another that
+      causes modifications of persistent storage. Such a request always
+      contains DTM0-related meta-data (transaction descriptor). W-requests
+      are used to replicate data across the cluster. They are stored in DTM0
+      log, and replayed by DTM0 service in form of REDO messages. In case of
+      CAS, W-requests are PUT and DEL operations
+   - <b>R-request</b> is a user service FOP that does not modify persistent
+      storage. R-requires are allowed to be sent only to the processes that
+      have ONLINE state. In case of CAS, R-requests are GET and NEXT operations.
 --->>>
 Max: [* defect *] The terms are not defined. Please define them.
+IvanA: I populated the list. I'll update the rest of the document
+       in a separate round of fixes.
 <<<---
 
    <hr>
@@ -540,6 +600,7 @@ Max: [* doc *] Please fill this section with references to the requirements.
 
    - [1] <a href="https://github.com/Seagate/cortx-motr/blob/documentation/doc/dev/dtm/dtm-hld.org">
    DTM0 HLD</a>
+   - [2] <a href="https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type">
 
    <hr>
    @section DLD-impl-plan Implementation Plan
