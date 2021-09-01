@@ -501,10 +501,14 @@ static void addb2_introduce(struct m0_fom *fom)
 
 static void queueit(struct m0_sm_group *grp, struct m0_sm_ast *ast)
 {
+	int svt;
 	struct m0_fom *fom = container_of(ast, struct m0_fom, fo_cb.fc_ast);
 
 	M0_PRE(m0_fom_invariant(fom));
 	M0_PRE(m0_fom_phase(fom) == M0_FOM_PHASE_INIT);
+
+	svt = m0_reqh_service_state_get(fom->fo_service);
+        M0_LOG(M0_DEBUG, "SHIPRA: Inside queueit service state %d for fom %p", svt, fom);
 
 	addb2_introduce(fom);
 	m0_fom_locality_inc(fom);
@@ -625,6 +629,7 @@ M0_INTERNAL void m0_fom_queue(struct m0_fom *fom)
 {
 	struct m0_fom_domain *dom;
 	size_t                loc_idx;
+	int svt;
 
 	M0_PRE(fom != NULL);
 
@@ -635,6 +640,8 @@ M0_INTERNAL void m0_fom_queue(struct m0_fom *fom)
 	fom->fo_loc_idx = loc_idx;
 	m0_fom_sm_init(fom);
 	fom->fo_cb.fc_ast.sa_cb = &queueit;
+	svt = m0_reqh_service_state_get(fom->fo_service);
+	M0_LOG(M0_DEBUG, "SHIPRA: before queueit service state %d for fom %p", svt, fom);
 	m0_sm_ast_post(&fom->fo_loc->fl_group, &fom->fo_cb.fc_ast);
 }
 

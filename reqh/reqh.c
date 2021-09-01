@@ -473,6 +473,7 @@ M0_INTERNAL int m0_reqh_fop_allow(struct m0_reqh *reqh, struct m0_fop *fop)
 
 	M0_ASSERT(svc->rs_ops != NULL);
 	svc_st = m0_reqh_service_state_get(svc);
+	M0_LOG(M0_DEBUG,"SHIPRA: Service state is %d for fop %p", svc_st, fop);	
 
 	switch (rh_st) {
 	case M0_REQH_ST_NORMAL:
@@ -583,6 +584,8 @@ M0_INTERNAL int m0_reqh_fop_handle(struct m0_reqh *reqh, struct m0_fop *fop)
 	rc = fop->f_type->ft_fom_type.ft_ops->fto_create(fop, &fom, reqh);
 	if (rc == 0)
 		m0_fom_queue(fom);
+
+	M0_LOG(M0_DEBUG,"SHIPRA: fom created and queued fop %p fom %p", fop, fom);
 
 	m0_rwlock_read_unlock(&reqh->rh_rwlock);
 	return M0_RC(rc);
